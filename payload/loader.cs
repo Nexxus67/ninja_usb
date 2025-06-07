@@ -1,0 +1,11 @@
+using System;
+using System.Runtime.InteropServices;
+
+class Loader {
+    [DllImport("kernel32.dll")]
+    static extern IntPtr LoadLibrary(string lpFileName);
+
+    static void Main() {
+        LoadLibrary("payload.dll");
+    }
+}
