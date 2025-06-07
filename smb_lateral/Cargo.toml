@@ -1,0 +1,2 @@
+[dependencies]
+smbclient = "0.2"

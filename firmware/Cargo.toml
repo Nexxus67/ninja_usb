@@ -1,0 +1,10 @@
+[package]
+name = "usb_ninja"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+usb-device = "0.2"
+usbd-hid = "0.7"
+usbd-scsi = "0.4"
+usbd-msd = "0.4"
