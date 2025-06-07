@@ -4,12 +4,7 @@ USB-Ninja Charger is a personal offensive security project that explores how a m
 
 ## 🎯 Objective
 
-To simulate an advanced "juice jacking" scenario by chaining multiple TTPs based on the MITRE ATT&CK framework. The device operates as:
-
-- A HID keyboard to trigger automatic payload execution
-- A hidden mass storage device carrying malicious DLLs
-- A lateral movement platform leveraging SMB and hash-based authentication
-- A tool for log tampering and forensic evasion
+This project demonstrates a USB-based attack using a Raspberry Pi Pico that emulates both a keyboard and a storage device. It is intended to be plugged into a Windows computer (e.g., via a USB charging port), where it automatically executes payloads without user interaction, mimicking a malicious charger scenario.
 
 ## 🧱 Components
 
