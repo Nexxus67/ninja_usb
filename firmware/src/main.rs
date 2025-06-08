@@ -72,6 +72,7 @@ fn main() -> ! {
                 sent_gui = true;
                 timer.delay_ms(150);
             } else if pos < CMD.len() {
+                // random time delays for avoiding heuristic detection, for mimicking human typing patterns
                 rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
                 if timer.wait_ms(((rng & 0x3F) + 25) as u16).is_ok() {
                     let (kc, md) = sc(CMD.as_bytes()[pos]);
