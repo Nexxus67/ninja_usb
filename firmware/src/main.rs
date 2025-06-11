@@ -8,7 +8,8 @@ use usb_device::{class_prelude::*, prelude::*};
 use usbd_hid::{descriptor::KeyboardReport, hid_class::HIDClass};
 use usbd_mass_storage::{BlockDevice, UsbMassStorage};
 
-static mut STORAGE: [u8; 64 * 512] = [0; 64 * 512];
+static mut STORAGE: [u8; 64 * 512] = *include_bytes!("fs_image_32kb.img");
+
 
 struct RamBlock;
 impl BlockDevice for RamBlock {
