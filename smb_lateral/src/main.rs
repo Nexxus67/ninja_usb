@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::net::{SocketAddr, ToSocketAddrs, TcpStream};
 use std::time::{Duration, Instant};
-use std::{thread, process};
+use std::{thread, process, io::Write};
 use anyhow::{Context, Result};
 use zeroize::Zeroizing;
 use log::{info, warn, error, LevelFilter};
@@ -23,10 +23,14 @@ struct Args {
     retries: u8,
     #[clap(long, default_value_t = 500)]
     retry_backoff_ms: u64,
+    #[clap(long, default_value_t = 0)]
+    rate_limit_ms: u64,
     #[clap(long)]
     json: bool,
     #[clap(long)]
     quiet: bool,
+    #[clap(long)]
+    audit_log: Option<String>,
 }
 
 fn resolve_sockaddrs(target: &str, port: u16) -> Result<Vec<SocketAddr>> {
@@ -41,6 +45,19 @@ fn resolve_sockaddrs(target: &str, port: u16) -> Result<Vec<SocketAddr>> {
 
 fn try_connect(addr: &SocketAddr, timeout: Duration) -> bool {
     TcpStream::connect_timeout(addr, timeout).is_ok()
+}
+
+fn audit_append(path: &Option<String>, entry: &str) {
+    if let Some(p) = path {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = writeln!(f, "{}", entry);
+        }
+    }
+}
+
+fn is_auth_error(e: &anyhow::Error) -> bool {
+    let s = e.to_string().to_lowercase();
+    s.contains("auth") || s.contains("logon") || s.contains("access denied") || s.contains("status_logon")
 }
 
 fn main() {
@@ -60,7 +77,8 @@ fn main() {
         process::exit(2);
     }
 
-    let decoded = match hex::decode(&*ntlm_hash) {
+    // Validate hex format and keep decoded in Zeroizing (for hygiene), though we send hex string to crate.
+    let _decoded = match hex::decode(&*ntlm_hash) {
         Ok(v) => Zeroizing::new(v),
         Err(_) => {
             error!("ntlm_hash is not valid hex");
@@ -77,12 +95,10 @@ fn main() {
     };
 
     let timeout = Duration::from_secs(args.connect_timeout_sec);
-    let mut attempt: u8 = 0;
     let start = Instant::now();
-    let mut last_err = None;
+    let mut last_err: Option<anyhow::Error> = None;
 
-    while attempt <= args.retries {
-        attempt += 1;
+    for attempt in 1..=args.retries {
         info!("attempt {}/{} connecting to {} (timeout {:?})", attempt, args.retries, args.port, timeout);
 
         let mut connected = false;
@@ -98,74 +114,128 @@ fn main() {
             }
         }
 
-        if connected {
+        if !connected {
+            audit_append(&args.audit_log, &format!("{} - attempt {} - tcp unreachable", args.target_ip, attempt));
+        } else {
             let target_host = &args.target_ip;
+            // NOTE: we call the hex-string API. If your smbclient requires bytes, tell me y confirmo la API.
             match SmbClient::new(target_host, &args.username, &*ntlm_hash) {
                 Ok(mut client) => {
                     if let Err(e) = client.connect() {
-                        warn!("smb connect failed: {}", e);
-                        last_err = Some(e.into());
+                        let err_any = anyhow::Error::new(e);
+                        warn!("smb connect failed: {}", err_any);
+                        audit_append(&args.audit_log, &format!("{} - attempt {} - smb connect failed: {}", args.target_ip, attempt, err_any));
+                        if is_auth_error(&err_any) {
+                            // auth unlikely to change → fail fast with specific code
+                            if args.json {
+                                let out = json!({
+                                    "target": target_host,
+                                    "addr": connect_addr.map(|a| a.to_string()),
+                                    "error_type": "auth_failed",
+                                    "message": format!("{}", err_any),
+                                    "duration_ms": start.elapsed().as_millis()
+                                });
+                                println!("{}", out.to_string());
+                            } else {
+                                error!("auth failed: {:?}", err_any);
+                            }
+                            process::exit(4);
+                        }
+                        last_err = Some(err_any);
                     } else {
                         match client.list_shares() {
                             Ok(shares) => {
                                 let shares_limited: Vec<String> = shares.into_iter().take(500).collect();
-                                if args.json {
-                                    let out = json!({
-                                        "target": target_host,
-                                        "addr": connect_addr.map(|a| a.to_string()),
-                                        "shares": shares_limited,
-                                        "duration_ms": start.elapsed().as_millis()
-                                    });
-                                    println!("{}", out.to_string());
-                                } else {
-                                    for s in shares_limited.iter() {
-                                        println!("{}", s);
+                                if shares_limited.is_empty() {
+                                    audit_append(&args.audit_log, &format!("{} - attempt {} - no shares", args.target_ip, attempt));
+                                    if args.json {
+                                        let out = json!({
+                                            "target": target_host,
+                                            "addr": connect_addr.map(|a| a.to_string()),
+                                            "error_type": "no_shares",
+                                            "message": "no shares found",
+                                            "duration_ms": start.elapsed().as_millis()
+                                        });
+                                        println!("{}", out.to_string());
+                                    } else {
+                                        error!("no shares found");
                                     }
-                                    info!("shares listed (duration {:.2?})", start.elapsed());
+                                    process::exit(5);
+                                } else {
+                                    if args.json {
+                                        let out = json!({
+                                            "target": target_host,
+                                            "addr": connect_addr.map(|a| a.to_string()),
+                                            "shares": shares_limited,
+                                            "duration_ms": start.elapsed().as_millis()
+                                        });
+                                        println!("{}", out.to_string());
+                                    } else {
+                                        for s in shares_limited.iter() {
+                                            println!("{}", s);
+                                        }
+                                        info!("shares listed (duration {:.2?})", start.elapsed());
+                                    }
+                                    audit_append(&args.audit_log, &format!("{} - success - {} shares - duration {}ms", args.target_ip, shares_limited.len(), start.elapsed().as_millis()));
+                                    process::exit(0);
                                 }
-                                process::exit(0);
                             }
                             Err(e) => {
-                                warn!("list_shares failed: {}", e);
-                                last_err = Some(e.into());
+                                let err_any = anyhow::Error::new(e);
+                                warn!("list_shares failed: {}", err_any);
+                                audit_append(&args.audit_log, &format!("{} - attempt {} - list_shares failed: {}", args.target_ip, attempt, err_any));
+                                last_err = Some(err_any);
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("SmbClient::new failed: {}", e);
-                    last_err = Some(e.into());
+                    let err_any = anyhow::Error::new(e);
+                    warn!("SmbClient::new failed: {}", err_any);
+                    audit_append(&args.audit_log, &format!("{} - attempt {} - client new failed: {}", args.target_ip, attempt, err_any));
+                    last_err = Some(err_any);
                 }
             }
         }
 
-        if attempt > args.retries {
-            break;
+        // sleep backoff + optional rate-limit BETWEEN attempts (but not after last)
+        if attempt < args.retries {
+            thread::sleep(Duration::from_millis(args.retry_backoff_ms * attempt as u64));
+            if args.rate_limit_ms > 0 {
+                thread::sleep(Duration::from_millis(args.rate_limit_ms));
+            }
         }
-        thread::sleep(Duration::from_millis(args.retry_backoff_ms * attempt as u64));
     }
 
+    // after attempts exhausted
     if let Some(e) = last_err {
         if args.json {
             let out = json!({
-                "error": format!("{:?}", e)
+                "target": args.target_ip,
+                "error_type": "last_error",
+                "message": format!("{:?}", e),
             });
             println!("{}", out.to_string());
         } else {
             error!("final error: {:?}", e);
         }
+        process::exit(1);
     } else {
         if args.json {
             let out = json!({
-                "error": "unable to reach host or no shares found"
+                "target": args.target_ip,
+                "error_type": "unreachable_or_no_shares",
+                "message": "unable to reach host or no shares found"
             });
             println!("{}", out.to_string());
         } else {
             error!("unable to reach host or no shares found");
         }
+        process::exit(1);
     }
-    process::exit(1);
 }
+
+
 
 
 
