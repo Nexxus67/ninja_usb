@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 use std::{thread, process};
 use anyhow::{Context, Result};
 use zeroize::Zeroizing;
-use log::{info, warn, error};
+use log::{info, warn, error, LevelFilter};
+use env_logger::Builder;
+use serde_json::json;
 
 use smbclient::SmbClient;
 
@@ -21,15 +23,20 @@ struct Args {
     retries: u8,
     #[clap(long, default_value_t = 500)]
     retry_backoff_ms: u64,
+    #[clap(long)]
+    json: bool,
+    #[clap(long)]
+    quiet: bool,
 }
 
-fn resolve_sockaddr(target: &str, port: u16) -> Result<SocketAddr> {
+fn resolve_sockaddrs(target: &str, port: u16) -> Result<Vec<SocketAddr>> {
     let addr_iter = (target, port).to_socket_addrs()
         .with_context(|| format!("resolving {}:{}", target, port))?;
-    addr_iter
-        .into_iter()
-        .next()
-        .context("no socket address found")
+    let addrs: Vec<_> = addr_iter.into_iter().collect();
+    if addrs.is_empty() {
+        anyhow::bail!("no socket addresses found");
+    }
+    Ok(addrs)
 }
 
 fn try_connect(addr: &SocketAddr, timeout: Duration) -> bool {
@@ -37,8 +44,15 @@ fn try_connect(addr: &SocketAddr, timeout: Duration) -> bool {
 }
 
 fn main() {
-    env_logger::init();
     let args = Args::parse();
+
+    let mut builder = Builder::new();
+    if args.quiet {
+        builder.filter_level(LevelFilter::Error);
+    } else {
+        builder.parse_default_env();
+    }
+    builder.init();
 
     let mut ntlm_hash = Zeroizing::new(args.ntlm_hash);
     if ntlm_hash.len() < 32 {
@@ -46,7 +60,15 @@ fn main() {
         process::exit(2);
     }
 
-    let addr = match resolve_sockaddr(&args.target_ip, args.port) {
+    let decoded = match hex::decode(&*ntlm_hash) {
+        Ok(v) => Zeroizing::new(v),
+        Err(_) => {
+            error!("ntlm_hash is not valid hex");
+            process::exit(2);
+        }
+    };
+
+    let addrs = match resolve_sockaddrs(&args.target_ip, args.port) {
         Ok(a) => a,
         Err(e) => {
             error!("address resolution failed: {}", e);
@@ -61,10 +83,24 @@ fn main() {
 
     while attempt <= args.retries {
         attempt += 1;
-        info!("attempt {}/{} connecting to {} (timeout {:?})", attempt, args.retries, addr, timeout);
-        if try_connect(&addr, timeout) {
-            info!("tcp connect ok");
-            match SmbClient::new(&args.target_ip, &args.username, &ntlm_hash) {
+        info!("attempt {}/{} connecting to {} (timeout {:?})", attempt, args.retries, args.port, timeout);
+
+        let mut connected = false;
+        let mut connect_addr = None;
+        for addr in &addrs {
+            info!("probing {}", addr);
+            if try_connect(addr, timeout) {
+                connected = true;
+                connect_addr = Some(*addr);
+                break;
+            } else {
+                warn!("tcp connect timeout/reject on {}", addr);
+            }
+        }
+
+        if connected {
+            let target_host = &args.target_ip;
+            match SmbClient::new(target_host, &args.username, &*ntlm_hash) {
                 Ok(mut client) => {
                     if let Err(e) = client.connect() {
                         warn!("smb connect failed: {}", e);
@@ -72,10 +108,21 @@ fn main() {
                     } else {
                         match client.list_shares() {
                             Ok(shares) => {
-                                for s in shares.into_iter().take(500) {
-                                    println!("{}", s);
+                                let shares_limited: Vec<String> = shares.into_iter().take(500).collect();
+                                if args.json {
+                                    let out = json!({
+                                        "target": target_host,
+                                        "addr": connect_addr.map(|a| a.to_string()),
+                                        "shares": shares_limited,
+                                        "duration_ms": start.elapsed().as_millis()
+                                    });
+                                    println!("{}", out.to_string());
+                                } else {
+                                    for s in shares_limited.iter() {
+                                        println!("{}", s);
+                                    }
+                                    info!("shares listed (duration {:.2?})", start.elapsed());
                                 }
-                                info!("shares listed (duration {:.2?})", start.elapsed());
                                 process::exit(0);
                             }
                             Err(e) => {
@@ -90,8 +137,6 @@ fn main() {
                     last_err = Some(e.into());
                 }
             }
-        } else {
-            warn!("tcp connect timeout/reject on attempt {}", attempt);
         }
 
         if attempt > args.retries {
@@ -101,12 +146,27 @@ fn main() {
     }
 
     if let Some(e) = last_err {
-        error!("final error: {:?}", e);
+        if args.json {
+            let out = json!({
+                "error": format!("{:?}", e)
+            });
+            println!("{}", out.to_string());
+        } else {
+            error!("final error: {:?}", e);
+        }
     } else {
-        error!("unable to reach host or no shares found");
+        if args.json {
+            let out = json!({
+                "error": "unable to reach host or no shares found"
+            });
+            println!("{}", out.to_string());
+        } else {
+            error!("unable to reach host or no shares found");
+        }
     }
     process::exit(1);
 }
+
 
 
 // cargo run --release -- 192.168.0.10 administrator 8846f7eaee8fb117ad06bdd830b7586c
